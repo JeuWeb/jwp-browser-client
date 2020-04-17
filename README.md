@@ -2,7 +2,7 @@
 
 Le client JavaScript de JeuWeb Push Server, à charger dans le navigateur de vos joueurs.
 
-Il permet de connecter vos joueurs à différents canaux grâce au protocole WebSocket, et d'exécuter du code à la réception des différents événements reçu sur chaque canal.
+Il permet de connecter vos joueurs à différents canaux grâce au protocole WebSocket, et d'exécuter du code à la réception des différents événements reçus sur chaque canal.
 
 Un événement est défini par un nom et un contenu.
 
