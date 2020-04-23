@@ -45,7 +45,7 @@ function asFunction(value) {
 // authentication data to be returned id {status: 'ok', data: authentication}
 function fetchParams(url) {
   return function authenticate(payload, next) {
-    fetch('/get/auth', {
+    fetch(url, {
       method: 'POST',
       headers: {
         'accept': 'application/json',
@@ -88,6 +88,8 @@ const appIDSymbol = SymbolFix('app_id')
 // This function instantiate a Phoenix.Socket and adds the authentication layer
 // through overrides.
 function createSocket(url, params) {
+  check(typeof params !== 'undefined', 'Socket params are not defined.')
+  check(null !== params, 'Socket params must not be null.')
   // Params may be fetched asynchronously by the overriden connect() function
   // and will be set directly on the socket object right before use.
   const socket = new Socket(url, {
@@ -115,6 +117,8 @@ function createSocket(url, params) {
   // - Automatic history fetching
   // - Presence API
   socket.channel = function channel(channelName, chanParams) {
+    check(typeof chanParams !== 'undefined', 'Channel params are not defined.')
+    check(null !== chanParams, 'Channel params must not be null.')
     return createChannel(socket, baseChannelFunction, channelName, chanParams)
   }
 
@@ -131,7 +135,7 @@ function connect(url, params) {
 
 // Handle the socket connection
 function socketConnect(socket, baseConnectFunction, paramsProvider) {
-  callParams(paramsProvider, { authType: 'socket' }, params => {
+  callParams(paramsProvider, { auth_type: 'socket' }, params => {
     debug.log('Socket params', params)
     check(null !== params, 'The params given to channel.join() cannot be null')
     check(
@@ -165,12 +169,17 @@ function socketConnect(socket, baseConnectFunction, paramsProvider) {
 // forever. The channel does not uses the params data except for creating its
 // joinPush directly in the constructor. This behaviour should be monitored for
 // future changes.
+//
+// We will also set the topic asynchronously since we need the app_id that is
+// given to the socket, maybe asynchronously too.
+// The topic is always read from channel.topic at the last minute thoughout the
+// Phoenix codebase so it is fine to set it while joining. Although it is ugly
+// and we also need async params support from phoenix there.
 function createChannel(socket, baseChannelFunction, channelName, chanParams) {
   // The params may be a function, so we always cast them to a function
   const paramsProvider = asFunction(chanParams || {})
-  const app_id = socket[appIDSymbol].toString()
-  const topic = `jwp:${app_id}:${channelName}`
-  const channel = baseChannelFunction(topic, function params() {
+
+  const channel = baseChannelFunction('__temporary__', function params() {
     throw new Error('Channel inital params must not be called')
   })
 
@@ -178,7 +187,7 @@ function createChannel(socket, baseChannelFunction, channelName, chanParams) {
   const { joinPush } = channel
   const baseSendFunction = joinPush.send.bind(joinPush)
   joinPush.send = function send() {
-    handleJoin(channel, joinPush, baseSendFunction, paramsProvider, topic)
+    handleJoin(channel, joinPush, baseSendFunction, paramsProvider, channelName)
   }
 
   // When receiving a message, if it is a message with a time id, we will
@@ -187,7 +196,8 @@ function createChannel(socket, baseChannelFunction, channelName, chanParams) {
   channel.onMessage = function (event, payload, _ref) {
     debug.log('channel message', event, payload)
     if (payload && payload.tid) {
-      setLastMsgID(topic, payload.tid)
+      // we can read the actual topic from the channel
+      setLastMsgID(channel.topic, payload.tid)
       return payload.data
     }
     return payload
@@ -203,26 +213,38 @@ function createChannel(socket, baseChannelFunction, channelName, chanParams) {
 
 // Sending the join push. We will call for async params and then set the final
 // payload on the joinPush
-function handleJoin(channel, joinPush, baseSendFunction, paramsProvider, topic) {
-  callParams(paramsProvider, { authType: 'channel' }, params => {
-    check(null !== params, 'The params given to channel.join() cannot be null')
-    check(
-      typeof params === 'object',
-      'The params given to channel.join() must resolve to an object'
-    )
-    const { auth } = params
-    check(typeof auth === 'string', 'Channels params must have an auth (String) property')
+function handleJoin(channel, joinPush, baseSendFunction, paramsProvider, channelName) {
+  callParams(
+    paramsProvider,
+    { auth_type: 'channel', channel_name: channelName },
+    params => {
+      check(null !== params, 'The params given to channel.join() cannot be null')
+      check(
+        typeof params === 'object',
+        'The params given to channel.join() must resolve to an object'
+      )
+      const { auth } = params
+      check(
+        typeof auth === 'string',
+        'Channels params must have an auth (String) property'
+      )
 
-    // We can override our channel and push objects as needed. We also want to
-    // send the last_message_id parameter.
-    joinPush.payload = function payload() {
-      // id may be null and that is valid
-      const last_message_id = getLastMsgID(topic)
-      return Object.assign({}, { last_message_id }, params)
+      // We are now able to set the channel topic directly. .toString() fails if
+      // not set
+      const app_id = channel.socket[appIDSymbol].toString()
+      const topic = `jwp:${app_id}:${channelName}`
+      channel.topic = topic
+      // We can override our channel and push objects as needed. We also want to
+      // send the last_message_id parameter.
+      joinPush.payload = function payload() {
+        // id may be null and that is valid
+        const last_message_id = getLastMsgID(topic)
+        return Object.assign({}, { last_message_id }, params)
+      }
+
+      baseSendFunction()
     }
-
-    baseSendFunction()
-  })
+  )
 }
 
 // Channels History management ------------------------------------------------
