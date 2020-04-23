@@ -5,7 +5,7 @@ module.exports = {
   'endOfLine': 'lf',
   'semi': false,
   'singleQuote': true,
-  'printWidth': 80,
+  'printWidth': 90,
   'trailing-comma': 'all',
   'quoteProps': 'consistent',
   'bracketSpacing': true,

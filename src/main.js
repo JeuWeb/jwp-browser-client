@@ -1,88 +1,193 @@
 import { Presence, Socket } from 'phoenix/assets/js/phoenix.js'
 
-function closure(value) {
+// Debugging tools and helpers ------------------------------------------------
+
+let debugMode = false
+
+function enableDebug() {
+  debugMode = true
+}
+
+function printDebug(type, ...args) {
+  if (debugMode) console[type](...args)
+}
+
+const debug = {
+  log: (...args) => printDebug('log', ...args),
+  info: (...args) => printDebug('info', ...args),
+  warn: (...args) => printDebug('warn', ...args),
+  error: (...args) => printDebug('error', ...args),
+  debug: (...args) => printDebug('debug', ...args),
+}
+
+// This is a small clone of the invariant package but without optimisation for
+// production as it is not needed.
+function check(isOk, errmsg) {
+  if (!isOk) throw new Error(errmsg)
+}
+
+let SymbolFix = typeof Symbol === 'undefined' ? String : Symbol
+
+// cast any value to a constant function except if the value is already a
+// function.
+function asFunction(value) {
   if (typeof value === 'function') {
     return value
   }
-
   return function () {
     return value
   }
 }
 
-// @todo use sessionStorage in production
-let storage = window.localStorage || {
-  getItem: function getItem() {
-    return null
-  },
-  setItem: function setItem() {},
+// Managing async parameters --------------------------------------------------
+
+// Returns a function that will fetch parameters from given url, expect
+// authentication data to be returned id {status: 'ok', data: authentication}
+function fetchParams(url) {
+  return function authenticate(payload, next) {
+    fetch('/get/auth', {
+      method: 'POST',
+      headers: {
+        'accept': 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    })
+      .then(d => d.json())
+      .then(d => {
+        switch (d.status) {
+          case 'ok':
+            return next(d.data)
+          case 'error':
+            throw new Error(d.error)
+          default:
+            throw new Error(`Incorrect return value from ${url}`)
+        }
+      })
+  }
 }
 
-function msgIDStorageKey(channel) {
-  return `jsp_msgid__${channel}`
+// Calling the params providing function.
+//
+// If the function has a lenght of 2, (like the authenticate function returned
+// by fetchParams), it accepts a next() callback to pass the parameters to. If
+// the lenght is less than 2, we expect the function to return thes params
+// directly.
+function callParams(provider, payload, next) {
+  if (provider.length < 2) {
+    return next(provider(payload))
+  }
+  return provider(payload, next)
 }
 
-function getLastMsgID(channelName) {
-  const key = msgIDStorageKey(channelName)
-  const value = storage.getItem(key)
-  console.log('value', value)
-  const data = null === value ? null : JSON.parse(value)
-  console.log('getLastMsgID %s =>', channelName, data)
-  return data
-}
+// Socket & Channels ----------------------------------------------------------
 
-function setLastMsgID(channelName, id) {
-  console.log('setLastMsgID', channelName, id)
-  const key = msgIDStorageKey(channelName)
-  storage.setItem(key, JSON.stringify(id))
-}
+// eslint-disable-next-line new-cap
+const appIDSymbol = SymbolFix('app_id')
 
-function connect(params) {
-  const socket = new Socket('ws://localhost:4000/socket', {
-    params: params,
+// This function instantiate a Phoenix.Socket and adds the authentication layer
+// through overrides.
+function createSocket(url, params) {
+  // Params may be fetched asynchronously by the overriden connect() function
+  // and will be set directly on the socket object right before use.
+  const socket = new Socket(url, {
+    params: () => {
+      throw new Error('Socket params cannot be called directly.')
+    },
   })
 
-  socket.connect()
+  const paramsProvider = asFunction(params)
 
-  const makeChannel = socket.channel.bind(socket)
+  const baseConnectFunction = socket.connect.bind(socket)
+  const baseChannelFunction = socket.channel.bind(socket)
 
-  // Overriding the .channel() method of the socket object
-  socket.channel = (...args) => createJwpChannel(makeChannel, params, ...args)
+  // We can now override the socket.connect() function. It can be called on
+  // reconnexion, and our code will run again with the same params. If the
+  // params is a function that fetches auth from the server, the server is
+  // able to return a fresh socket.
+  // eslint-disable-next-line no-shadow
+  socket.connect = function connect() {
+    return socketConnect(socket, baseConnectFunction, paramsProvider)
+  }
+
+  // We override the channel function to add different features:
+  // - Channel topic prefix to match jwp:<app_id>:<topic>
+  // - Automatic history fetching
+  // - Presence API
+  socket.channel = function channel(channelName, chanParams) {
+    return createChannel(socket, baseChannelFunction, channelName, chanParams)
+  }
 
   return socket
 }
 
-// Creates a new channel on the socket
-function createJwpChannel(makeChannel, conf, channelName, channelParams) {
+// We will export this simple connect() function that does socket instantiation
+// and connection at once.
+function connect(url, params) {
+  const socket = createSocket(url, params)
+  socket.connect()
+  return socket
+}
+
+// Handle the socket connection
+function socketConnect(socket, baseConnectFunction, paramsProvider) {
+  callParams(paramsProvider, { authType: 'socket' }, params => {
+    debug.log('Socket params', params)
+    check(null !== params, 'The params given to channel.join() cannot be null')
+    check(
+      typeof params === 'object',
+      'The params given to channel.join() must resolve to an object'
+    )
+    const { app_id, auth } = params
+    check(
+      typeof app_id === 'string',
+      'Socket params must have an app_id (String) property'
+    )
+    check(typeof auth === 'string', 'Socket params must have an auth (String) property')
+    // Once we have the actual params, we set them on the socket and call the
+    // base connect function. This requires to know the inner details of the
+    // socket class, and relies on the fact that javascript classes do not have
+    // private members. Phoenix does not support async params providers (yet ?).
+    socket.params = asFunction(params)
+    // We set the app_id param directly on the socket object, so it can be
+    // retrieved by the joinPush of a channel, hence we do not need to provide
+    // the app_id param to a channel.
+    socket[appIDSymbol] = app_id
+    baseConnectFunction()
+  })
+}
+
+// Creates the channel on the socket, with support for async params. The base
+// phoenix function returns a channel directly, so we should do the same.
+// Fetching async parents will be done by overriding the send() method of the
+// channel.joinPush object. Luckily, this joinPush is reused whenever the
+// channel needs to rejoin(), so we can override it once and it will work
+// forever. The channel does not uses the params data except for creating its
+// joinPush directly in the constructor. This behaviour should be monitored for
+// future changes.
+function createChannel(socket, baseChannelFunction, channelName, chanParams) {
   // The params may be a function, so we always cast them to a function
-  channelParams = closure(channelParams || {})
+  const paramsProvider = asFunction(chanParams || {})
+  const app_id = socket[appIDSymbol].toString()
+  const topic = `jwp:${app_id}:${channelName}`
+  const channel = baseChannelFunction(topic, function params() {
+    throw new Error('Channel inital params must not be called')
+  })
 
-  // We will augment those params with our last message id for messages history
-  // @todo opt-in history.
-  // We will give params as a function in order to fetch the last message id
-  // upon joining and not when creating the channel
-  const params = function () {
-    // id may be null and that is valid
-    const id = getLastMsgID(channelName)
-    return Object.assign({}, { last_message_id: id }, channelParams())
+  // Overriding the joinPush to fetch params when joining()
+  const { joinPush } = channel
+  const baseSendFunction = joinPush.send.bind(joinPush)
+  joinPush.send = function send() {
+    handleJoin(channel, joinPush, baseSendFunction, paramsProvider, topic)
   }
-
-  const { app_id } = conf
-
-  // prefixing the channel name with our service name and the app id so
-  // different applications can use the same channel names without using the
-  // same physical channel
-  const channel = makeChannel(`jwp:${app_id}:${channelName}`, params)
 
   // When receiving a message, if it is a message with a time id, we will
   // unwrap the message to get what whas actually pushed, and store this time id
   // as the new last message id.
   channel.onMessage = function (event, payload, _ref) {
-    console.log('--------------------------')
-    console.log('event', event)
-    console.log('payload', payload)
+    debug.log('channel message', event, payload)
     if (payload && payload.tid) {
-      setLastMsgID(channelName, payload.tid)
+      setLastMsgID(topic, payload.tid)
       return payload.data
     }
     return payload
@@ -96,4 +201,56 @@ function createJwpChannel(makeChannel, conf, channelName, channelParams) {
   return channel
 }
 
-export default { connect }
+// Sending the join push. We will call for async params and then set the final
+// payload on the joinPush
+function handleJoin(channel, joinPush, baseSendFunction, paramsProvider, topic) {
+  callParams(paramsProvider, { authType: 'channel' }, params => {
+    check(null !== params, 'The params given to channel.join() cannot be null')
+    check(
+      typeof params === 'object',
+      'The params given to channel.join() must resolve to an object'
+    )
+    const { auth } = params
+    check(typeof auth === 'string', 'Channels params must have an auth (String) property')
+
+    // We can override our channel and push objects as needed. We also want to
+    // send the last_message_id parameter.
+    joinPush.payload = function payload() {
+      // id may be null and that is valid
+      const last_message_id = getLastMsgID(topic)
+      return Object.assign({}, { last_message_id }, params)
+    }
+
+    baseSendFunction()
+  })
+}
+
+// Channels History management ------------------------------------------------
+
+// @todo use sessionStorage in production
+let storage = window.localStorage || {
+  getItem: function getItem() {
+    return null
+  },
+  setItem: function setItem() {},
+}
+
+function msgIDStorageKey(channel) {
+  return `jsp_msgid__${channel}`
+}
+
+function getLastMsgID(topic) {
+  const key = msgIDStorageKey(topic)
+  const value = storage.getItem(key)
+  debug.log('getLastMsgID', key, value)
+  const data = null === value ? null : JSON.parse(value)
+  return data
+}
+
+function setLastMsgID(topic, id) {
+  const key = msgIDStorageKey(topic)
+  debug.log('setLastMsgID', key, id)
+  storage.setItem(key, JSON.stringify(id))
+}
+
+export default { connect, enableDebug, fetchParams }
