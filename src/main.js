@@ -26,8 +26,6 @@ function check(isOk, errmsg) {
   if (!isOk) throw new Error(errmsg)
 }
 
-let SymbolFix = typeof Symbol === 'undefined' ? String : Symbol
-
 // cast any value to a constant function except if the value is already a
 // function.
 function asFunction(value) {
@@ -81,9 +79,6 @@ function callParams(provider, payload, next) {
 }
 
 // Socket & Channels ----------------------------------------------------------
-
-// eslint-disable-next-line new-cap
-const appIDSymbol = SymbolFix('app_id')
 
 // This function instantiate a Phoenix.Socket and adds the authentication layer
 // through overrides.
@@ -153,10 +148,6 @@ function socketConnect(socket, baseConnectFunction, paramsProvider) {
     // socket class, and relies on the fact that javascript classes do not have
     // private members. Phoenix does not support async params providers (yet ?).
     socket.params = asFunction(params)
-    // We set the app_id param directly on the socket object, so it can be
-    // retrieved by the joinPush of a channel, hence we do not need to provide
-    // the app_id param to a channel.
-    socket[appIDSymbol] = app_id
     baseConnectFunction()
   })
 }
@@ -223,16 +214,18 @@ function handleJoin(channel, joinPush, baseSendFunction, paramsProvider, channel
         typeof params === 'object',
         'The params given to channel.join() must resolve to an object'
       )
-      const { auth } = params
+      const { app_id, auth } = params
+      check(
+        typeof app_id === 'string',
+        'Channels params must have an app_id (String) property'
+      )
       check(
         typeof auth === 'string',
         'Channels params must have an auth (String) property'
       )
 
-      // We are now able to set the channel topic directly. .toString() fails if
-      // not set
-      const app_id = channel.socket[appIDSymbol].toString()
       const topic = `jwp:${app_id}:${channelName}`
+      debug.log(`Setting topic to ${topic}`)
       channel.topic = topic
       // We can override our channel and push objects as needed. We also want to
       // send the last_message_id parameter.
