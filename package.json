@@ -3,15 +3,17 @@
   "version": "1.0.0",
   "main": "dist/jwp.cjs.js",
   "module": "dist/jwp.esm.js",
-  "browser": "dist/jwp.umd.js",
+  "browser": "dist/jwp.js",
   "dependencies": {
-    "phoenix": "^1.5.1"
+    "phoenix": "^1.5.1",
+    "xhr": "^2.5.0"
   },
   "devDependencies": {
     "@rollup/plugin-buble": "^0.21.3",
     "@rollup/plugin-commonjs": "^11.0.1",
     "@rollup/plugin-node-resolve": "^7.0.0",
-    "rollup": "^1.29.0"
+    "rollup": "^1.29.0",
+    "rollup-plugin-terser": "^5.3.0"
   },
   "scripts": {
     "build": "rollup -c",

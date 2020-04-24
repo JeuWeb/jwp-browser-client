@@ -1,23 +1,25 @@
 import { Presence, Socket } from 'phoenix/assets/js/phoenix.js'
+// XHR is used to support IE11 with ajax auth calls
+import xhr from 'xhr'
 
 // Debugging tools and helpers ------------------------------------------------
 
-let debugMode = false
+let debugMode = true
 
 function enableDebug() {
   debugMode = true
 }
 
-function printDebug(type, ...args) {
+function printDebug(type, args) {
   if (debugMode) console[type](...args)
 }
 
 const debug = {
-  log: (...args) => printDebug('log', ...args),
-  info: (...args) => printDebug('info', ...args),
-  warn: (...args) => printDebug('warn', ...args),
-  error: (...args) => printDebug('error', ...args),
-  debug: (...args) => printDebug('debug', ...args),
+  log: function() { printDebug('log', arguments) },
+  info: function() { printDebug('info', arguments) },
+  warn: function() { printDebug('warn', arguments) },
+  error: function() { printDebug('error', arguments) },
+  debug: function() { printDebug('debug', arguments) },
 }
 
 // This is a small clone of the invariant package but without optimisation for
@@ -43,25 +45,65 @@ function asFunction(value) {
 // authentication data to be returned id {status: 'ok', data: authentication}
 function fetchParams(url) {
   return function authenticate(payload, next) {
-    fetch(url, {
+    const options = {
       method: 'POST',
       headers: {
         'accept': 'application/json',
         'content-type': 'application/json',
       },
       body: JSON.stringify(payload),
-    })
-      .then(d => d.json())
-      .then(d => {
-        switch (d.status) {
-          case 'ok':
-            return next(d.data)
-          case 'error':
-            throw new Error(d.error)
-          default:
-            throw new Error(`Incorrect return value from ${url}`)
+    }
+    fetch(url, options)
+      .then(resp => {
+        if (200 !== resp.status) {
+          throw new Error(`Expected a 200 HTTP status code, got ${resp.status}`)
         }
+        return resp
       })
+      .then(d => d.json())
+      .then(body => handleAuthResponse(body, next, err => { throw err }))
+  }
+}
+
+function defaultXhrErrorHandler(err) {
+  throw err
+}
+
+function xhrParams(url, errorHandler = defaultXhrErrorHandler) {
+  return function authenticate(payload, next) {
+    const options = {
+      method: 'post',
+      headers: {
+        'accept': 'application/json',
+        'content-type': 'application/json',
+      },
+      json: true,
+      body: payload,
+    }
+    xhr(url, options, function (err, resp, body) {
+      if (err) {
+        errorHandler(err, resp, body)
+      } else if (200 !== resp.statusCode) {
+        errorHandler(
+          new Error(`Expected a 200 HTTP status code, got ${resp.statusCode}`),
+          resp,
+          body
+        )
+      } else {
+        handleAuthResponse(body, next, errorHandler)
+      }
+    })
+  }
+}
+
+function handleAuthResponse(body, next, errorHandler) {
+  switch (body.status) {
+    case 'ok':
+      return next(body.data)
+    case 'error':
+      return errorHandler(new Error(body.error))
+    default:
+      return errorHandler(new Error(`Incorrect status value: '${body.status}'`))
   }
 }
 
@@ -242,12 +284,11 @@ function handleJoin(channel, joinPush, baseSendFunction, paramsProvider, channel
 
 // Channels History management ------------------------------------------------
 
-// @todo use sessionStorage in production
-let storage = window.localStorage || {
+let storage = window.sessionStorage || {
   getItem: function getItem() {
     return null
   },
-  setItem: function setItem() {},
+  setItem: function setItem() { },
 }
 
 function msgIDStorageKey(channel) {
@@ -268,4 +309,4 @@ function setLastMsgID(topic, id) {
   storage.setItem(key, JSON.stringify(id))
 }
 
-export default { connect, enableDebug, fetchParams }
+export default { connect, fetchParams, xhrParams, enableDebug}

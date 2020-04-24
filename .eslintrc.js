@@ -84,6 +84,7 @@ module.exports = {
     'id-match': 'error',
     'implicit-arrow-linebreak': ['error', 'beside'],
     'init-declarations': 'error',
+    'indent': ['error', 2, { SwitchCase: 1 }],
     'jsx-quotes': 'error',
     'key-spacing': 'off',
     'keyword-spacing': [
@@ -101,7 +102,7 @@ module.exports = {
     'max-classes-per-file': 'error',
     'max-depth': 'error',
     'max-len': 'off',
-    'max-lines': 'error',
+    'max-lines': 'off',
     'max-lines-per-function': 'off',
     'max-nested-callbacks': 'error',
     'max-params': 'off',
