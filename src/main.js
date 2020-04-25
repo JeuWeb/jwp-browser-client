@@ -151,7 +151,6 @@ function createSocket(url, params) {
 
   // We override the channel function to add different features:
   // - Channel topic prefix to match jwp:<app_id>:<topic>
-  // - Automatic history fetching
   // - Presence API
   socket.channel = function channel(channelName, chanParams) {
     check(typeof chanParams !== 'undefined', 'Channel params are not defined.')
@@ -223,19 +222,6 @@ function createChannel(socket, baseChannelFunction, channelName, chanParams) {
     handleJoin(channel, joinPush, baseSendFunction, paramsProvider, channelName)
   }
 
-  // When receiving a message, if it is a message with a time id, we will
-  // unwrap the message to get what whas actually pushed, and store this time id
-  // as the new last message id.
-  channel.onMessage = function (event, payload, _ref) {
-    debug.log('channel message', event, payload)
-    if (payload && payload.tid) {
-      // we can read the actual topic from the channel
-      setLastMsgID(channel.topic, payload.tid)
-      return payload.data
-    }
-    return payload
-  }
-
   // Add presence support directly from the channel
   channel.presence = function presence() {
     return new Presence(channel)
@@ -271,42 +257,11 @@ function handleJoin(channel, joinPush, baseSendFunction, paramsProvider, channel
       channel.topic = topic
       // We can override our channel and push objects as needed. We also want to
       // send the last_message_id parameter.
-      joinPush.payload = function payload() {
-        // id may be null and that is valid
-        const last_message_id = getLastMsgID(topic)
-        return Object.assign({}, { last_message_id }, params)
-      }
+      joinPush.payload = asFunction(params)
 
       baseSendFunction()
     }
   )
-}
-
-// Channels History management ------------------------------------------------
-
-let storage = window.sessionStorage || {
-  getItem: function getItem() {
-    return null
-  },
-  setItem: function setItem() { },
-}
-
-function msgIDStorageKey(channel) {
-  return `jsp_msgid__${channel}`
-}
-
-function getLastMsgID(topic) {
-  const key = msgIDStorageKey(topic)
-  const value = storage.getItem(key)
-  debug.log('getLastMsgID', key, value)
-  const data = null === value ? null : JSON.parse(value)
-  return data
-}
-
-function setLastMsgID(topic, id) {
-  const key = msgIDStorageKey(topic)
-  debug.log('setLastMsgID', key, id)
-  storage.setItem(key, JSON.stringify(id))
 }
 
 export default { connect, fetchParams, xhrParams, enableDebug}
