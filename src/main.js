@@ -204,14 +204,14 @@ function socketConnect(socket, baseConnectFunction, paramsProvider) {
 //
 // We will also set the topic asynchronously since we need the app_id that is
 // given to the socket, maybe asynchronously too.
-// The topic is always read from channel.topic at the last minute thoughout the
+// The topic is always read from channel.topic at the last minute throughout the
 // Phoenix codebase so it is fine to set it while joining. Although it is ugly
 // and we also need async params support from phoenix there.
 function createChannel(socket, baseChannelFunction, channelName, chanParams) {
   // The params may be a function, so we always cast them to a function
   const paramsProvider = asFunction(chanParams || {})
 
-  const channel = baseChannelFunction('__temporary__', function params() {
+  const channel = baseChannelFunction(channelName, function params() {
     throw new Error('Channel inital params must not be called')
   })
 
@@ -252,11 +252,6 @@ function handleJoin(channel, joinPush, baseSendFunction, paramsProvider, channel
         'Channels params must have an auth (String) property'
       )
 
-      const topic = `jwp:${app_id}:${channelName}`
-      debug.log(`Setting topic to ${topic}`)
-      channel.topic = topic
-      // We can override our channel and push objects as needed. We also want to
-      // send the last_message_id parameter.
       joinPush.payload = asFunction(params)
 
       baseSendFunction()
